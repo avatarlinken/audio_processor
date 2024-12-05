@@ -89,9 +89,18 @@ class AudioProcessor:
                                           variable=self.progress_var)
         self.progress_bar.pack(fill="x", padx=5, pady=5)
 
+        # 状态指示区域（状态灯和文字）
+        status_frame = ttk.Frame(progress_frame)
+        status_frame.pack(fill="x", padx=5)
+        
+        # 状态灯（使用Canvas绘制）
+        self.status_light = tk.Canvas(status_frame, width=20, height=20, highlightthickness=0)
+        self.status_light.pack(side="left", padx=(0, 5))
+        self.status_light_id = self.status_light.create_oval(5, 5, 15, 15, fill="green")
+        
         # 状态标签
-        self.status_label = ttk.Label(progress_frame, text="就绪")
-        self.status_label.pack(pady=5)
+        self.status_label = ttk.Label(status_frame, text="就绪", wraplength=400)
+        self.status_label.pack(side="left", fill="x", pady=5)
 
     def reset_parameters(self):
         """重置所有参数到默认值"""
@@ -233,7 +242,7 @@ class AudioProcessor:
         if file_path:
             self.file_path_var.set(file_path)
             self.convert_button.configure(state="normal")
-            self.status_label.configure(text="已选择文件，可以开始转换")
+            self.update_status("已选择文件，可以开始转换")
             self.progress_var.set(0)
 
     def update_progress(self, value, status_text):
@@ -241,6 +250,23 @@ class AudioProcessor:
         self.progress_var.set(value)
         self.status_label.configure(text=status_text)
         self.window.update_idletasks()
+
+    def update_status(self, status_text, status_type="ready"):
+        """更新状态标签的文本和状态灯颜色
+        
+        Args:
+            status_text: 状态文本
+            status_type: 状态类型，可选值：ready（就绪）, processing（处理中）, error（错误）
+        """
+        self.status_label.config(text=status_text)
+        
+        # 更新状态灯颜色
+        color_map = {
+            "ready": "green",
+            "processing": "yellow",
+            "error": "red"
+        }
+        self.status_light.itemconfig(self.status_light_id, fill=color_map.get(status_type, "gray"))
 
     def open_file_location(self, file_path):
         """打开文件所在文件夹并高亮显示文件"""
@@ -261,13 +287,13 @@ class AudioProcessor:
             
             # 更新状态
             self.update_progress(10, "正在加载音频文件...")
-            
+            self.update_status("正在加载音频文件...", "processing")
             # 加载音频文件
             audio = AudioSegment.from_file(file_path)
             
             # 更新状态
             self.update_progress(30, "正在处理音频通道...")
-            
+            self.update_status("正在处理音频通道...", "processing")
             # 获取音频样本
             samples = np.array(audio.get_array_of_samples())
             
@@ -282,11 +308,13 @@ class AudioProcessor:
                     left_channel = self.merge_channels(left_channel, right_channel)
 
             self.update_progress(50, "正在生成SMPTE时间码...")
+            self.update_status("正在生成SMPTE时间码...", "processing")
             
             # 生成SMPTE时间码
             smpte_signal = self.generate_smpte_timecode(len(audio), audio.frame_rate)
             
             self.update_progress(70, "正在合并音频通道...")
+            self.update_status("正在合并音频通道...", "processing")
             
             # 确保时间码信号长度与音频信号匹配
             if len(smpte_signal) > len(left_channel):
@@ -298,6 +326,7 @@ class AudioProcessor:
             new_samples = np.column_stack((left_channel, smpte_signal * 32767))
 
             self.update_progress(90, "正在保存文件...")
+            self.update_status("正在保存文件...", "processing")
             
             # 生成带时间戳的文件名
             timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -307,6 +336,7 @@ class AudioProcessor:
             sf.write(output_path, new_samples, audio.frame_rate)
 
             self.update_progress(100, "转换完成！")
+            self.update_status("转换完成！", "ready")
             
             # 显示成功消息并询问是否打开文件位置
             result = messagebox.askquestion("成功", 
@@ -318,12 +348,11 @@ class AudioProcessor:
             
             # 重置进度条和状态
             self.progress_var.set(0)
-            self.status_label.configure(text="就绪")
             self.convert_button.configure(state="normal")
 
         except Exception as e:
             self.progress_var.set(0)
-            self.status_label.configure(text="转换失败")
+            self.update_status("转换失败", "error")
             self.convert_button.configure(state="normal")
             messagebox.showerror("错误", f"处理过程中出现错误：{str(e)}")
 
