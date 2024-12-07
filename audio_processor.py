@@ -19,6 +19,10 @@ class AudioProcessor:
         self.signal_type = tk.StringVar(value="sine")
         self.volume = tk.DoubleVar(value=0.5)
         
+        # 添加采样率变量
+        self.sample_rate = 44100  # 默认采样率
+        self.input_file_path = None
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -110,8 +114,11 @@ class AudioProcessor:
         self.signal_type.set("sine")
         self.volume.set(0.5)
 
-    def generate_smpte_timecode(self, duration_ms, sample_rate=44100):
+    def generate_smpte_timecode(self, duration_ms):
         """生成SMPTE LTC时间码音频"""
+        # 使用输入文件的采样率
+        sample_rate = self.sample_rate
+        
         # 获取用户设置的参数
         fps = float(self.fps.get())
         is_drop_frame = self.drop_frame.get()
@@ -215,35 +222,60 @@ class AudioProcessor:
         return output
 
     def merge_channels(self, left, right):
-        """使用专业的声道合并算法
+        """专业立体声降混算法 (ITU-R BS.775标准)
         
-        使用ITU-R BS.775-3标准的下混合算法：
-        L = L + 0.707*R (约-3dB)
+        使用ITU-R BS.775标准的系数进行立体声到单声道的转换，
+        保持浮点数精度以确保波形连续性。
         """
-        # 将数据转换为浮点数进行计算
-        left = left.astype(np.float64)
-        right = right.astype(np.float64)
+        # 转换为64位浮点数以保持最高精度
+        left = np.asarray(left, dtype=np.float64)
+        right = np.asarray(right, dtype=np.float64)
         
-        # 应用ITU-R BS.775-3下混合系数
-        merged = left + 0.707 * right
+        # 将输入数据归一化到 [-1, 1] 范围
+        max_abs_left = np.max(np.abs(left))
+        max_abs_right = np.max(np.abs(right))
+        max_abs = max(max_abs_left, max_abs_right)
+        if max_abs > 0:
+            left = left / max_abs
+            right = right / max_abs
         
-        # 防止削波（clipping）
-        max_val = np.max(np.abs(merged))
-        if max_val > 0:
-            merged = merged / max_val * np.max(np.abs(left))
+        # ITU-R BS.775标准系数 (1/√2 ≈ 0.7071067811865476)
+        ITU_COEF = 0.7071067811865476
+        
+        # 应用ITU-R BS.775标准的降混公式
+        merged = ITU_COEF * (left + right)
+        
+        # 确保没有值超出范围
+        merged = np.clip(merged, -1.0, 1.0)
+        
+        # 转换回32位浮点数，保持精度
+        merged = merged.astype(np.float32)
+        
+        # 创建双声道输出
+        stereo_output = np.zeros((len(merged), 2), dtype=np.float32)
+        stereo_output[:, 0] = merged  # 左声道放混合信号
+        # 右声道保持为0
             
-        return merged.astype(left.dtype)
+        return stereo_output
 
     def select_file(self):
         """选择音频文件"""
         file_path = filedialog.askopenfilename(
-            filetypes=[("Audio Files", "*.mp3 *.wav")]
+            filetypes=[("音频文件", "*.wav *.mp3 *.aac *.ogg *.flac")]
         )
         if file_path:
+            self.input_file_path = file_path
             self.file_path_var.set(file_path)
             self.convert_button.configure(state="normal")
-            self.update_status("已选择文件，可以开始转换")
-            self.progress_var.set(0)
+            
+            # 读取输入文件的采样率
+            try:
+                audio_data, sample_rate = sf.read(file_path)
+                self.sample_rate = sample_rate
+                self.status_label.config(text=f"已加载文件，采样率: {sample_rate} Hz")
+            except Exception as e:
+                messagebox.showerror("错误", f"读取文件失败: {str(e)}")
+                return
 
     def update_progress(self, value, status_text):
         """更新进度条和状态文本"""
@@ -301,17 +333,27 @@ class AudioProcessor:
             if audio.channels == 1:
                 left_channel = samples
             else:
+                # 将立体声拆分成左右声道
                 samples = samples.reshape((-1, audio.channels))
                 left_channel = samples[:, 0]
                 if audio.channels > 1:
                     right_channel = samples[:, 1]
-                    left_channel = self.merge_channels(left_channel, right_channel)
+                    # 使用自然混音算法
+                    mixed_channels = self.merge_channels(left_channel, right_channel)
+                    left_channel = mixed_channels[:, 0]  # 获取混音后的左声道
+                    
+                    # # 保存混音文件
+                    # mixed_timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    # mixed_output_path = os.path.splitext(file_path)[0] + f"_mixed_{mixed_timestamp}.wav"
+                    # # 保存为双声道文件，右声道为空
+                    # sf.write(mixed_output_path, mixed_channels, audio.frame_rate)
+                    # self.status_label.config(text=f"已保存混音文件: {os.path.basename(mixed_output_path)}")
 
             self.update_progress(50, "正在生成SMPTE时间码...")
             self.update_status("正在生成SMPTE时间码...", "processing")
             
             # 生成SMPTE时间码
-            smpte_signal = self.generate_smpte_timecode(len(audio), audio.frame_rate)
+            smpte_signal = self.generate_smpte_timecode(len(audio))
             
             self.update_progress(70, "正在合并音频通道...")
             self.update_status("正在合并音频通道...", "processing")
